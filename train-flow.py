@@ -31,10 +31,12 @@ def train(args):
 
     model_config = {
         'dim': args.dimension,
-        'final_time': 1.0,
-        'atol': args.ode_atol,
-        'exact_trace': False,
-        'transform_config': {
+        'bijector_config': {
+            'final_time': 1.0,
+            'atol': args.ode_atol,
+            'exact_trace': False
+        },
+        'net_config': {
             'num_residual_blocks': args.ode_num_residual_blocks,
             'hidden_dim': args.ode_hidden_dim,
             'num_block_layers': args.ode_num_block_layers,
@@ -48,7 +50,8 @@ def train(args):
         'dim': args.dimension,
         'num_transform_layers': args.num_transform_layers,
         'batchnorm': False,
-        'transform_config': {
+        'bijector_config': {'fraction_masked': 0.5},
+        'net_config': {
             'layer_sizes': args.spline_layer_sizes,
             'num_knots': args.spline_num_knots,
             'boundary': [-args.spline_boundary, args.spline_boundary],

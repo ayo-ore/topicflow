@@ -3,7 +3,6 @@ import os
 from glob import glob
 from scipy.optimize import linprog
 from tensorflow.data import Dataset, AUTOTUNE
-from topicflow import utils
 
 EFP_DIR = '~/.topic_flow/efps'
 
@@ -60,16 +59,19 @@ def preprocess(quarks, gluons, pca, norms):
     np.log(stack, out=stack)
     
     # shift to zero mean
-    mean = norms['mean'] or stack.mean(axis=0)
+    mean = stack.mean(axis=0) if norms['mean'] is None else norms['mean']
     np.subtract(stack, mean, out=stack)
 
     if pca:
         # transform to principal component basis
-        evecs = norms['evecs'] or np.linalg.eig(np.cov(stack.T))[1]
+        evecs = (
+            np.linalg.eig(np.cov(stack.T))[1] if norms['evecs'] is None
+            else norms['evecs']
+        )
         np.dot(stack, evecs, out=stack)
     
     # scale to unit standard deviation
-    std = norms['std'] or stack.std(axis=0)
+    std = stack.std(axis=0) if norms['std'] is None else norms['std']
     np.divide(stack, std, out=stack)
     
     # convert to float32
@@ -129,7 +131,8 @@ def get_component_cutoffs(purities):
 def get_samples_from_disk(directory, fractions, purities, pca, only=None):
 
     # check that we have valid purities
-    utils.check_purities(purities)
+    assert all((0 <= p <= 1 for p in purities)), \
+        "Purities must be in the range [0,1]."
 
     # determine component cutoffs
     quark_cutoffs, gluon_cutoffs = get_component_cutoffs(purities)

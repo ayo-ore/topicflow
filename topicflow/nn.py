@@ -41,13 +41,114 @@ def make_dnn(
     dnn = Sequential(hidden_layers)
     return dnn
     
+
+class ResidualBlock(tf.Module):
+
+    def __init__(
+        self,
+        hidden_dim,
+        num_layers,
+        activation='relu',
+        first=False,
+        dropout=None,
+        batchnorm=False,
+        regularizer=None
+    ):
+
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.activation = activation
+        self.first = first
+        self.batchnorm = batchnorm
+        self.dropout = dropout
+        self.regularizer = regularizer
+        self.build()
+
+    def build(self):
+        if self.first:
+            self.embedding = layers.Dense(
+                self.hidden_dim, activation=self.activation,
+                kernel_regularizer=self.regularizer
+            )
+
+        self.dense_layers = [
+            layers.Dense(self.hidden_dim, kernel_regularizer=self.regularizer)
+            for _ in range(self.num_layers)
+        ]
+        self.activation_layer = layers.Activation(self.activation)
+
+        if self.batchnorm:
+            self.batchnorms = [layers.BatchNormalization()] * self.num_layers
+
+        if self.dropout is not None:
+            self.dropout_layer = layers.Dropout(self.dropout)
+
+    @tf.function
+    def __call__(self, x):
+        if self.first:
+            x = self.embedding(x)
+        for i, layer in enumerate(self.dense_layers):
+            y = layer(x if i == 0 else y)
+            if self.dropout:
+                y = self.dropout_layer(y)
+            if self.batchnorm:
+                y = self.batchnorms[i](y)
+            y = self.activation_layer(y)
+
+        return x + y
+
+
+class ResNet(Model):
+
+    def __init__(
+        self,
+        num_blocks,
+        hidden_dim,
+        num_layers,
+        output_dim,
+        activation='tanh',
+        batchnorm=False,
+        dropout=None,
+        regularizer=None,
+        *args,
+        **kwargs
+    ):
+
+        super(ResNet, self).__init__(*args, **kwargs)
+        self.num_blocks = num_blocks
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.output_dim = output_dim
+        self.activation = activation
+        self.dropout = dropout
+        self.batchnorm = batchnorm
+        self.regularizer = regularizer
+
+        self.blocks = [
+            ResidualBlock(
+                self.hidden_dim, self.num_layers, first=i == 0,
+                activation=self.activation, batchnorm=self.batchnorm,
+                regularizer=self.regularizer
+            ) for i in range(self.num_blocks)
+        ]
+        self.final = layers.Dense(self.output_dim, activation=None,
+                                  kernel_regularizer=self.regularizer)
+
+    @tf.function
+    def call(self, x):
+        for block in self.blocks:
+            x = block(x)
+        return self.final(x)
+
+
 class Flow(Model):
 
     def __init__(
         self,
         dim: int,
         num_transform_layers: int,
-        transform_config:dict,
+        bijector_config:dict,
+        net_config:dict,
         batchnorm:bool=True,
         training:bool=False,
         **kwargs
@@ -58,7 +159,8 @@ class Flow(Model):
         self.num_transform_layers = num_transform_layers
         self.base = tfd.Sample(tfd.Normal(0, 1), sample_shape=[self.dim])
         self.nll_tracker = metrics.Mean(name="NegativeLogLikelihood")
-        self.transform_config = transform_config
+        self.net_config = net_config
+        self.bijector_config = bijector_config
         self.batchnorm = batchnorm
         self.training = training
         self.build()
@@ -182,21 +284,21 @@ class ConditionalFlow(Flow):
 class AffineCouplingFlow(Flow):
 
     def build_param_network(self):
-        return AffineNet(input_dim=self.dim//2, **self.transform_config)
+        return AffineNet(input_dim=self.dim//2, **self.net_config)
 
     def build_transform_layer(self, affine_net):
-        return tfb.RealNVP(fraction_masked=0.5, shift_and_log_scale_fn=affine_net)
+        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
 
 
 class ConditionalAffineCouplingFlow(ConditionalFlow):
 
     def build_param_network(self):
         return ConditionalAffineNet(
-            input_dim=self.dim//2, condition_dim=self.condition_dim, **self.transform_config
+            input_dim=self.dim//2, condition_dim=self.condition_dim, **self.net_config
         )
 
     def build_transform_layer(self, affine_net):
-        return tfb.RealNVP(fraction_masked=0.5, shift_and_log_scale_fn=affine_net)
+        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
 
     def _condition_kwargs(self, c):
         return {'real_nvp': {'cond': c}}
@@ -204,21 +306,21 @@ class ConditionalAffineCouplingFlow(ConditionalFlow):
 class RQSCouplingFlow(Flow):
 
     def build_param_network(self):
-        return RQSNet(dim=self.dim, **self.transform_config)
+        return RQSNet(dim=self.dim, **self.net_config)
 
-    def build_transform_layer(self, rqs_net):
-        return tfb.RealNVP(fraction_masked=0.5, bijector_fn=rqs_net)
+    def build_transform_layer(self, affine_net):
+        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
 
 
 class ConditionalRQSCouplingFlow(ConditionalFlow):
 
     def build_param_network(self):
         return ConditionalRQSNet(
-            dim=self.dim, condition_dim=self.condition_dim, **self.transform_config
+            dim=self.dim, condition_dim=self.condition_dim, **self.net_config
         )
 
-    def build_transform_layer(self, rqs_net):
-        return tfb.RealNVP(fraction_masked=0.5, bijector_fn=rqs_net)
+    def build_transform_layer(self, affine_net):
+        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
 
     def _condition_kwargs(self, c):
         return {'real_nvp': {'cond': c}}
@@ -367,11 +469,15 @@ class RQSNet(tf.Module):
         s = layers.Lambda(self._normalize_slopes)(s)
 
         out = w, h, s
-        self.network = Model(inputs=inp, outputs=out, name='spline_params_network')
+        self.network = Model(
+            inputs=inp, outputs=out, name='spline_params_network'
+        )
 
     @tf.function
     def __call__(self, x, input_dim):
-        return tfb.RationalQuadraticSpline(*self.network(x), range_min=self.boundary[0])
+        return tfb.RationalQuadraticSpline(
+            *self.network(x), range_min=self.boundary[0]
+        )
 
 
 class ConditionalRQSNet(RQSNet):
@@ -387,83 +493,24 @@ class ConditionalRQSNet(RQSNet):
 
     @tf.function
     def __call__(self, x, input_dim, cond):
-        return tfb.RationalQuadraticSpline(*self.network([x, cond]), range_min=self.boundary[0])
-
-class ResidualBlock(tf.Module):
-
-    def __init__(self, hidden_dim, num_layers, activation='relu', first=False, dropout=None, batchnorm=False, regularizer=None):
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.activation = activation
-        self.first = first
-        self.batchnorm = batchnorm
-        self.dropout = dropout
-        self.regularizer = regularizer
-        self.build()
-
-    def build(self):
-        if self.first:
-            self.embedding = layers.Dense(
-                self.hidden_dim, activation=self.activation, kernel_regularizer=self.regularizer)
-
-        self.dense_layers = [
-            layers.Dense(self.hidden_dim, kernel_regularizer=self.regularizer)
-            for _ in range(self.num_layers)
-        ]
-        self.activation_layer = layers.Activation(self.activation)
-
-        if self.batchnorm:
-            self.batchnorms = [layers.BatchNormalization()] * self.num_layers
-
-        if self.dropout is not None:
-            self.dropout_layer = layers.Dropout(self.dropout)
-
-    @tf.function
-    def __call__(self, x):
-        if self.first:
-            x = self.embedding(x)
-        for i, layer in enumerate(self.dense_layers):
-            y = layer(x if i == 0 else y)
-            if self.dropout:
-                y = self.dropout_layer(y)
-            if self.batchnorm:
-                y = self.batchnorms[i](y)
-            y = self.activation_layer(y)
-
-        return x + y
-
-
-class ResNet(Model):
-
-    def __init__(self, num_blocks, hidden_dim, num_layers, output_dim, activation='tanh', batchnorm=False, dropout=None, regularizer=None, *args, **kwargs):
-
-        super(ResNet, self).__init__(*args, **kwargs)
-        self.num_blocks = num_blocks
-        self.hidden_dim = hidden_dim
-        self.num_layers = num_layers
-        self.output_dim = output_dim
-        self.activation = activation
-        self.dropout = dropout
-        self.batchnorm = batchnorm
-        self.regularizer = regularizer
-
-        self.blocks = [
-            ResidualBlock(self.hidden_dim, self.num_layers, first=i == 0,
-                          activation=self.activation, batchnorm=self.batchnorm, regularizer=self.regularizer)
-            for i in range(self.num_blocks)
-        ]
-        self.final = layers.Dense(self.output_dim, activation=None,
-                                  kernel_regularizer=self.regularizer)
-
-    @tf.function
-    def call(self, x):
-        for block in self.blocks:
-            x = block(x)
-        return self.final(x)
+        return tfb.RationalQuadraticSpline(
+            *self.network([x, cond]), range_min=self.boundary[0]
+        )
 
 class ODENet(tf.Module):
 
-    def __init__(self, input_dim, num_residual_blocks, hidden_dim, num_block_layers, activation, regularizer, dropout, *args, **kwargs):
+    def __init__(
+        self,
+        input_dim,
+        num_residual_blocks,
+        hidden_dim,
+        num_block_layers,
+        activation,
+        regularizer,
+        dropout,
+        *args,
+        **kwargs
+        ):
 
         super(ODENet, self).__init__(*args, **kwargs)
 
@@ -507,158 +554,46 @@ class ConditionalODENet(ODENet):
         return self.network(inp)
 
 
-class NeuralODEFlow(Model):
+class NeuralODEFlow(Flow):
 
-    def __init__(self, dim: int, transform_config: dict, final_time: int = 1, atol:float = 1e-5, exact_trace=False, training: bool = False, **kwargs):
-        super().__init__(**kwargs)
-        self.dim = dim
-        self.final_time = final_time
-        self.transform_config = transform_config
-        self.atol = atol
-        self.exact_trace = exact_trace
-        self.base = tfd.Sample(tfd.Normal(0, 1), sample_shape=[self.dim])
-        self.nll_tracker = metrics.Mean(name="NegativeLogLikelihood")
+    def build_param_network(self):
+        return ODENet(input_dim=self.dim, **self.net_config)
 
-        self.solver = tfm.ode.DormandPrince(atol=self.atol)
-        self.bijector = self.build_bijector()
-        self.flow = tfd.TransformedDistribution(
-            distribution=self.base, bijector=self.bijector
-        )
-
-    def build_bijector(self):
-        bijector = tfb.FFJORD(
-            final_time=self.final_time,
-            state_time_derivative_fn=ODENet(input_dim=self.dim, **self.transform_config),
-            ode_solve_fn=self.solver.solve,
-            trace_augmentation_fn=(tfb.ffjord.trace_jacobian_exact
-                if self.exact_trace else tfb.ffjord.trace_jacobian_hutchinson
+    def build_transform_layer(self, ode_net):
+        solver = tfm.ode.DormandPrince(atol=self.bijector_config['atol'])
+        return tfb.FFJORD(
+            state_time_derivative_fn=ode_net, ode_solve_fn=solver.solve,
+            final_time=self.bijector_config['final_time'],
+            trace_augmentation_fn=(
+                tfb.ffjord.trace_jacobian_exact if
+                self.bijector_config['exact_trace']
+                else tfb.ffjord.trace_jacobian_hutchinson
             )
         )
-        return bijector
-
-    def sample(self, num_samples):
-        return self.flow.sample(num_samples)
-
-    @tf.function
-    def call(self, x):
-        return self.flow.log_prob(x)
-
-    @property
-    def metrics(self):
-        return [self.nll_tracker]
-
-    @tf.function
-    def train_step(self, batch):
-        with tf.GradientTape() as tape:
-            nll = -tf.reduce_mean(self(batch))
-        parameters = tape.watched_variables()
-        grads = tape.gradient(nll, parameters)
-        self.optimizer.apply_gradients(zip(grads, parameters))
-        self.nll_tracker.update_state(nll)
-        return {self.nll_tracker.name: self.nll_tracker.result()}
-
-    @tf.function
-    def test_step(self, batch):
-        nll = -tf.reduce_mean(self(batch))
-        self.nll_tracker.update_state(nll)
-        return {self.nll_tracker.name: self.nll_tracker.result()}
-
-    def train(
-        self,
-        trn_data,
-        val_data,
-        max_epochs,
-        decay=0.2,
-        patience=5,
-        tol=1e-4,
-        min_lr=1e-5,
-        log_dir=None
-    ):
-
-        # initialize summary writers
-        if log_dir is not None:
-            trn_writer = tf.summary.create_file_writer(os.path.join(log_dir, 'train'))
-            val_writer = tf.summary.create_file_writer(os.path.join(log_dir, 'validation'))
-
-        best_loss = np.inf
-        wait = 0
-        lr = self.optimizer.lr
-        for e in range(max_epochs):
-            print(f"Epoch {e+1} | ", end='')
-
-            # train
-            for batch in trn_data:
-                self.train_step(batch)
-            trn_loss = self.nll_tracker.result().numpy()
-            print(f'  trn: {trn_loss:7.4f}', end='')
-            self.nll_tracker.reset_states()
-
-            # validate
-            for batch in val_data:
-                self.test_step(batch)
-            val_loss = self.nll_tracker.result().numpy()
-            print(f'  val: {val_loss:7.4f}')
-            self.nll_tracker.reset_states()
-
-            # early stopping and decay
-            if best_loss - val_loss > tol:
-                best_loss = val_loss
-                best_weights = self.trainable_variables
-                wait = 0
-            else:
-                wait += 1
-            if wait == patience:
-                if lr > min_lr:
-                    lr.assign(max(decay*lr, min_lr))
-                    print(f'INFO: Reducing learning rate to {lr.value():.4f}')
-                    wait = 0
-                else:
-                    print(f'INFO: Restoring best weights with validation loss {best_loss:.4f}')
-                    for m, b in zip(self.trainable_variables, best_weights):
-                        m.assign(b)
-                    break
-
-            # write metrics to tensorboard
-            if log_dir is not None:
-                with trn_writer.as_default(step=e+1):
-                    tf.summary.scalar('NegativeLogLikelihood', trn_loss)
-                with val_writer.as_default(step=e+1):
-                    tf.summary.scalar('NegativeLogLikelihood', val_loss)
 
 
-    def evaluate(self, tst_data):
-        for e in tst_data:
-            self.train_step(e)
-        tst_loss = self.nll_tracker.result().numpy()
-        self.nll_tracker.reset_states()
-        return tst_loss
+class ConditionalNeuralODEFlow(ConditionalFlow):
 
-class ConditionalNeuralODEFlow(NeuralODEFlow):
+    def build_param_network(self):
+        return ConditionalODENet(
+            input_dim=self.dim, condition_dim=self.condition_dim,
+            **self.net_config
+        )
 
-    def __init__(self, condition_dim, *args, **kwargs):
-        self.condition_dim = condition_dim
-        super().__init__(*args, **kwargs)
-
-
-    def build_bijector(self):
-        bijector = tfb.FFJORD(
-            final_time=self.final_time,
-            state_time_derivative_fn=ConditionalODENet(
-                condition_dim=self.condition_dim, input_dim=self.dim, **self.transform_config
-            ), ode_solve_fn=self.solver.solve,
-            trace_augmentation_fn=(tfb.ffjord.trace_jacobian_exact
-                if self.exact_trace else tfb.ffjord.trace_jacobian_hutchinson
+    def build_transform_layer(self, ode_net):
+        solver = tfm.ode.DormandPrince(atol=self.bijector_config['atol'])
+        return tfb.FFJORD(
+            state_time_derivative_fn=ode_net, ode_solve_fn=solver.solve,
+            final_time=self.bijector_config['final_time'],
+            trace_augmentation_fn=(
+                tfb.ffjord.trace_jacobian_exact if
+                self.bijector_config['exact_trace']
+                else tfb.ffjord.trace_jacobian_hutchinson
             )
         )
-        return bijector
 
-    @tf.function
-    def call(self, x):
-        return self.flow.log_prob(x[0], bijector_kwargs={'cond': x[1]})
-
-    def sample(self, num_samples, c):
-        c = tf.repeat([c], num_samples, axis=0)
-        return self.flow.sample(num_samples, bijector_kwargs={'cond': c})
+    def _condition_kwargs(self, c):
+        return {'ffjord': {'cond': c}}
 
 
 class TopicFlow(Model):
