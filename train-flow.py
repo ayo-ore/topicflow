@@ -1,46 +1,5 @@
 #!/usr/bin/env python3
 
-
-def submit(tag, run, args):
-    """Submits a job to the batch system that runs this script with the same
-    configuration."""
-
-    import sys
-    from glob import glob
-    from subprocess import call
-
-    model = 'topic_' + args.arch
-    if args.nopca:
-        model += '_nopca'
-    model_dir = os.path.join(args.savedir, f'd{args.dimension}', model, tag)
-    
-    # determine run number
-    prev_runs = glob(os.path.join(model_dir, 'run*'))
-    next_run = max([int(p.split('run_')[-1]) for p in prev_runs]) + 1 \
-        if prev_runs else 0
-
-    setup_cmd = 'ml fosscuda/2020b python/3.9.6 cudnn/8.2.1.32-cuda-11.3.1'
-    drop_args = ['-q', '--queue', args.queue, '-s', '--savedir', args.savedir]
-    rundir = os.path.join(model_dir, f'run_{next_run + (run if args.dry else 0)}')
-    script_cmd = 'python ' + ' '.join(
-        [a for a in sys.argv if a not in drop_args]
-    ) + f" --savedir {rundir}"
-
-    log_dir = os.path.join(rundir, 'log')
-    if not args.dry:
-        os.makedirs(log_dir, exist_ok=False)
-
-    qos = ' -q gpgpuresplat' if args.queue == 'gpgpu' else ''
-    cmd = (
-        f"sbatch -p {args.queue}{qos} --mem {args.memory} -N 1 -c 4 --gpus 1"
-        f" -t 48:00:00 -J {model}_{tag} -e {os.path.join(log_dir, '%x')}.err"
-        f" -o {os.path.join(log_dir, '%x')}.out --wrap \"{setup_cmd}; {script_cmd}\""
-    )
-    print(f'[CMD] {cmd}')
-    if not args.dry:
-        call(cmd, shell=True, executable='/bin/bash')
-
-
 def train(args):
 
     import sys
@@ -215,14 +174,17 @@ if __name__ == '__main__':
     parser.add_argument('-D', '--dimension', type=int, required=True)
     parser.add_argument('--nopca', action='store_true')
     parser.add_argument('-s', '--savedir', default=os.getcwd())
-    parser.add_argument('-q', '--queue', default=None)
-    parser.add_argument('-m', '--memory', default='48G')
-    parser.add_argument('-n', '--runs', type=int, default=1)
+    parser.add_argument('--efp_dir', default=None)
+    parser.add_argument('--dry', action='store_true')
+
     parser.add_argument('-b', '--batch_size', type=int, default=1000)
     parser.add_argument('-e', '--epochs', type=int, default=200)
     parser.add_argument('-p', '--patience', type=int, default=10)
     parser.add_argument('-l', '--learning_rate', type=float, default=1e-4)
     parser.add_argument('-w', '--warmup_epochs', type=int, default=0)
+    parser.add_argument('-T', '--trn_frac', type=float, default=0.75)
+    parser.add_argument('-V', '--val_frac', type=float, default=0.1)
+    parser.add_argument('-E', '--tst_frac', type=float, default=0.15)
 
     parser.add_argument('--arch', choices=('node', 'rqs'), default='node')
     parser.add_argument('-L', '--num_transform_layers', type=int, default=16)
@@ -241,19 +203,19 @@ if __name__ == '__main__':
     parser.add_argument('--ode_weight_decay', type=float, default=0.)
     parser.add_argument('--ode_dropout', type=float, default=None)
 
-    parser.add_argument('-T', '--trn_frac', type=float, default=0.75)
-    parser.add_argument('-V', '--val_frac', type=float, default=0.1)
-    parser.add_argument('-E', '--tst_frac', type=float, default=0.15)
-    parser.add_arguemtn('--efp_dir', default=None)
-    parser.add_argument('--dry', action='store_true')
+    parser.add_argument('-q', '--queue', default=None)
+    parser.add_argument('-m', '--memory', default='48G')
+    parser.add_argument('-t', '--time', default='48:00:00')
+    parser.add_argument('-n', '--runs', type=int, default=1)
+
     args = parser.parse_args()
 
     tpf.utils.check_fractions(args.trn_frac, args.val_frac, args.tst_frac)
     tpf.utils.check_purities(args.purities)
 
-    if args.queue:
+    if args.queue: # slurm cluster
         tag = tpf.utils.create_tag(args.purities, args.train_frac)
         for run in range(args.runs):
-            submit(tpf.utils.create_tag(), run, args)
+            tpf.utils.submit_train_job(args.arch +'_topic', tag, run, args)
     else:
         train(args)
