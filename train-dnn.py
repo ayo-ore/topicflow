@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 
+import numpy as np
+import os
+import pickle
+import topicflow as tpf
+
+from argparse import ArgumentParser
+from tensorflow.config.threading import set_inter_op_parallelism_threads
+from tensorflow.keras.callbacks import EarlyStopping, TensorBoard
+from tensorflow.keras.optimizers import Adam
+from tensorflow.keras.regularizers import l1
+
 def train(args):
 
-    import data
-    import nn
-    import numpy as np
-    import pickle
-    import topicflow as tpf
-    from tensorflow.config.threading import set_inter_op_parallelism_threads
-    from tensorflow.keras.callbacks import EarlyStopping, TensorBoard
-    from tensorflow.keras.optimizers import Adam
-    from tensorflow.keras.regularizers import l1
 
     # set threads
     set_inter_op_parallelism_threads(4)
@@ -92,10 +94,6 @@ def train(args):
             pickle.dump(demix_dict, fd)
 
 if __name__ == '__main__':
-
-    import os
-    import topicflow as tpf
-    from argparse import ArgumentParser
 
     parser = ArgumentParser()
     parser.add_argument('-P', '--purities', type=float, nargs=2, required=True)
