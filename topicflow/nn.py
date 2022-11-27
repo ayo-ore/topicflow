@@ -1,7 +1,8 @@
-from abc import abstractmethod
 import numpy as np
 import os
 import tensorflow as tf
+
+from abc import abstractmethod
 from tensorflow.keras import Input, Model, Sequential
 from tensorflow.keras import activations, layers, metrics
 from tensorflow_probability import bijectors as tfb
@@ -18,7 +19,7 @@ def make_dnn(
     constraint=None,
     regularizer=None,
     dropout=None
-    ):
+):
 
     hidden_layers = []
     for i, s in enumerate(hidden_units):
@@ -40,7 +41,7 @@ def make_dnn(
     )
     dnn = Sequential(hidden_layers)
     return dnn
-    
+
 
 class ResidualBlock(tf.Module):
 
@@ -141,18 +142,165 @@ class ResNet(Model):
         return self.final(x)
 
 
+class RQSNet(tf.Module):
+
+    def __init__(
+        self,
+        dim,
+        num_residual_blocks,
+        hidden_dim,
+        num_block_layers,
+        num_knots,
+        boundary,
+        min_width,
+        min_slope,
+        activation,
+        regularizer=None,
+        dropout=None,
+        **kwargs
+    ):
+
+        super(RQSNet, self).__init__(**kwargs)
+
+        # split in-out dimensions since tensorflow_probability
+        # implementation conditions x[d+1:D] on x[1:d] for
+        # autoregressive-like model
+        self.output_dim = dim - dim//2
+        self.num_residual_blocks = num_residual_blocks
+        self.hidden_dim = hidden_dim
+        self.num_block_layers = num_block_layers
+        self.num_knots = num_knots
+        self.boundary = boundary
+        self.min_width = min_width
+        self.min_slope = min_slope
+        self.activation = activation
+        self.regularizer = regularizer
+        self.dropout = dropout
+        self.network = tpf.nn.ResNet(
+            num_blocks=self.num_residual_blocks,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_block_layers,
+            output_dim=(3 * self.num_bins - 1) * self.output_dim,
+            activation=self.activation,
+            regularizer=self.regularizer,
+            dropout=self.dropout
+        )
+
+    @property
+    def num_bins(self):
+        return self.num_knots - 1
+
+    @tf.function
+    def _normalize_bins(self, x):
+        norm = self.boundary[1] - self.boundary[0] \
+               - self.num_bins * self.min_width
+        return activations.softmax(x, axis=-1) * norm + self.min_width
+
+    @tf.function
+    def _normalize_slopes(self, x):
+        return activations.softplus(x) + self.min_slope
+
+    @tf.function
+    def __call__(self, x, input_dim):
+
+        x = self.network(x)
+        x = tf.reshape(
+            x, tf.concat((tf.shape(x)[:-1], (self.output_dim, -1)), axis=0)
+        )
+        w, h, s = tf.split(
+            x, (self.num_bins, self.num_bins, self.num_bins-1), -1
+        )
+        w = self._normalize_bins(w)
+        h = self._normalize_bins(h)
+        s = self._normalize_slopes(s)
+
+        return tfb.RationalQuadraticSpline(w, h, s, range_min=self.boundary[0])
+
+    def summary(self):
+        self.network.summary()
+
+
+class ConditionalRQSNet(RQSNet):
+
+    def __init__(self, condition_dim, *args, **kwargs):
+        self.condition_dim = condition_dim
+        super().__init__(*args, **kwargs)
+
+    @tf.function
+    def __call__(self, x, input_dim, cond):
+        x = tf.concat([x, cond], axis=-1)
+        return super().__call__(x, input_dim)
+
+
+class ODENet(tf.Module):
+
+    def __init__(
+        self,
+        input_dim,
+        num_residual_blocks,
+        hidden_dim,
+        num_block_layers,
+        activation,
+        regularizer,
+        dropout,
+        *args,
+        **kwargs
+    ):
+
+        super(ODENet, self).__init__(*args, **kwargs)
+
+        self.input_dim = input_dim
+        self.num_residual_blocks = num_residual_blocks
+        self.hidden_dim = hidden_dim
+        self.num_block_layers = num_block_layers
+        self.input_dim = input_dim
+        self.activation = activation
+        self.regularizer = regularizer
+        self.dropout = dropout
+        self.network = ResNet(
+            num_blocks=self.num_residual_blocks,
+            hidden_dim=self.hidden_dim,
+            num_layers=self.num_block_layers,
+            output_dim=self.input_dim,
+            activation=self.activation,
+            regularizer=self.regularizer,
+            dropout=self.dropout
+        )
+
+    @tf.function
+    def __call__(self, t, x):
+        t = tf.expand_dims(tf.repeat(t, tf.shape(x)[0]), axis=1)
+        inp = tf.concat([t, x], axis=-1)
+        return self.network(inp)
+
+    def summary(self):
+        self.network.summary()
+
+
+class ConditionalODENet(ODENet):
+
+    def __init__(self, condition_dim, *args, **kwargs):
+        self.condition_dim = condition_dim
+        super().__init__(*args, **kwargs)
+
+    def __call__(self, t, x, cond):
+        t = tf.expand_dims(tf.repeat(t, tf.shape(x)[0]), axis=1)
+        inp = tf.concat([t, x, cond], axis=-1)
+        return self.network(inp)
+
+
 class Flow(Model):
 
     def __init__(
         self,
         dim: int,
-        num_transform_layers: int,
-        bijector_config:dict,
-        net_config:dict,
-        batchnorm:bool=True,
-        training:bool=False,
+        num_transform_layers,
+        bijector_config,
+        net_config,
+        batchnorm = True,
+        training = False,
         **kwargs
-        ):
+    ):
 
         super().__init__(**kwargs)
         self.dim = dim
@@ -265,51 +413,37 @@ class ConditionalFlow(Flow):
     def call(self, x):
         return self.flow.log_prob(x[0], bijector_kwargs=self._condition_kwargs(x[1]))
 
-    @tf.function
-    def train_step(self, batch):
-        with tf.GradientTape() as tape:
-            nll = -tf.reduce_mean(self(batch))
-        grads = tape.gradient(nll, self.trainable_variables)
-        self.optimizer.apply_gradients(zip(grads, self.trainable_variables))
-        self.nll_tracker.update_state(nll)
-        return {self.nll_tracker.name: self.nll_tracker.result()}
 
-    @tf.function
-    def test_step(self, batch):
-        nll = -tf.reduce_mean(self(batch))
-        self.nll_tracker.update_state(nll)
-        return {self.nll_tracker.name: self.nll_tracker.result()}
+# class AffineCouplingFlow(Flow):
+
+#     def build_param_network(self):
+#         return AffineNet(input_dim=self.dim//2, **self.net_config)
+
+#     def build_transform_layer(self, affine_net):
+#         return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
 
 
-class AffineCouplingFlow(Flow):
+# class ConditionalAffineCouplingFlow(ConditionalFlow):
 
-    def build_param_network(self):
-        return AffineNet(input_dim=self.dim//2, **self.net_config)
+#     def build_param_network(self):
+#         return ConditionalAffineNet(
+#             input_dim=self.dim//2, condition_dim=self.condition_dim, **self.net_config
+#         )
 
-    def build_transform_layer(self, affine_net):
-        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
+#     def build_transform_layer(self, affine_net):
+#         return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
 
+#     def _condition_kwargs(self, c):
+#         return {'real_nvp': {'cond': c}}
 
-class ConditionalAffineCouplingFlow(ConditionalFlow):
-
-    def build_param_network(self):
-        return ConditionalAffineNet(
-            input_dim=self.dim//2, condition_dim=self.condition_dim, **self.net_config
-        )
-
-    def build_transform_layer(self, affine_net):
-        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
-
-    def _condition_kwargs(self, c):
-        return {'real_nvp': {'cond': c}}
 
 class RQSCouplingFlow(Flow):
 
     def build_param_network(self):
         return RQSNet(dim=self.dim, **self.net_config)
 
-    def build_transform_layer(self, affine_net):
-        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
+    def build_transform_layer(self, rqs_net):
+        return tfb.RealNVP(bijector_fn=rqs_net, **self.bijector_config)
 
 
 class ConditionalRQSCouplingFlow(ConditionalFlow):
@@ -319,239 +453,11 @@ class ConditionalRQSCouplingFlow(ConditionalFlow):
             dim=self.dim, condition_dim=self.condition_dim, **self.net_config
         )
 
-    def build_transform_layer(self, affine_net):
-        return tfb.RealNVP(shift_and_log_scale_fn=affine_net, **self.bijector_config)
+    def build_transform_layer(self, rqs_net):
+        return tfb.RealNVP(bijector_fn=rqs_net, **self.bijector_config)
 
     def _condition_kwargs(self, c):
         return {'real_nvp': {'cond': c}}
-
-class AffineInverseAutoregressiveFlow(Flow):
-
-    def soft_clamp(self, shift_and_logscale_fn):
-        @tf.function
-        def soft_clamped(x):
-            x = shift_and_logscale_fn(x)
-            shift, log_scale = tf.split(x, 2, axis=-1)
-            return tf.concat([shift, 2*tf.math.tanh(log_scale)], axis=-1)
-        return soft_clamped
-        
-    def build_param_network(self):
-        return tfb.AutoregressiveNetwork(
-            params=2, event_shape=[self.dim], activation='relu', **self.transform_config
-        )
-
-    def build_transform_layer(self, param_net):
-        return tfb.Invert(tfb.MaskedAutoregressiveFlow(self.soft_clamp(param_net)))
-
-class AffineNet(tf.Module):
-
-    def __init__(self, input_dim, layer_sizes, shift_only=False, regularizer=None, **kwargs):
-
-        super().__init__(**kwargs)
-        self.input_dim = input_dim
-        self.layer_sizes = layer_sizes
-        self.shift_only = shift_only
-        self.regularizer = regularizer
-        self.build()
-
-    @property
-    def input_layers(self):
-        return [Input(self.input_dim, name="input")]
-
-    @tf.Module.with_name_scope
-    def build(self):
-        inp = self.input_layers
-        x = tf.concat(inp, axis=-1)
-
-        # dense layers
-        for i, s in enumerate(self.layer_sizes):
-            x = layers.Dense(
-                s, name=f"layer_{i}", activation='relu', kernel_regularizer=self.regularizer
-            )(x)
-
-        # output
-        x = layers.Dense(
-            2 - int(self.shift_only), name="output", activation='linear',
-            kernel_regularizer=self.regularizer
-        )(x)
-
-        if self.shift_only:
-            out = x, None
-        else:
-            shift, log_scale = tf.split(x, 2, axis=-1)
-            log_scale = tf.multiply(tf.math.tanh(log_scale), 2)  # 'soft clamping'
-            out = shift, log_scale
-        self.network = Model(inputs=inp, outputs=out)
-
-    @tf.function
-    def __call__(self, x, input_dim):
-        return self.network(x)
-
-
-class ConditionalAffineNet(AffineNet):
-
-    def __init__(self, condition_dim, *args, **kwargs):
-        self.condition_dim = condition_dim
-        super().__init__(*args, **kwargs)
-
-    @property
-    def input_layers(self):
-        return [Input(self.input_dim, name="input"),
-                Input(self.condition_dim, name="conditional_input")]
-
-    @tf.function
-    def __call__(self, x, input_dim, cond):
-        return self.network([x, cond])
-
-
-class RQSNet(tf.Module):
-
-    def __init__(
-        self, dim, layer_sizes, num_knots, boundary, min_width, min_slope,
-        regularizer=None, dropout=None, **kwargs
-    ):
-
-        super().__init__(**kwargs)
-        # split in-out dimensions since tensorflow_probability
-        # implementation conditions x[d+1:D] on x[1:d] for autoregressive-like model
-        self.input_dim = dim//2
-        self.output_dim = dim - dim//2
-        self.layer_sizes = layer_sizes
-        self.num_knots = num_knots
-        self.boundary = boundary
-        self.regularizer = regularizer
-        self.dropout = dropout
-        self.min_width = min_width
-        self.min_slope = min_slope
-        self.build()
-
-    @property
-    def input_layers(self):
-        return [Input(self.input_dim, name="input")]
-
-    @property
-    def num_bins(self):
-        return self.num_knots - 1
-    
-    @tf.function
-    def _normalize_bins(self, x):
-        norm = self.boundary[1] - self.boundary[0] - self.num_bins * self.min_width
-        return activations.softmax(x, axis=-1) * norm + self.min_width
-    
-    @tf.function
-    def _normalize_slopes(self, x):
-        return activations.softplus(x) + self.min_slope
-
-    @tf.Module.with_name_scope
-    def build(self):
-
-        # inputs
-        inp = self.input_layers
-        x = tf.concat(inp, axis=-1)
-        # hidden layers
-        for i, d in enumerate(self.layer_sizes):
-            x = layers.Dense(
-                d, name=f"layer_{i}", activation='relu', kernel_regularizer=self.regularizer
-            )(x)
-            if self.dropout:
-                x = layers.Dropout(self.dropout, name=f"dropout_{i}")(x)
-        # outputs
-        x = layers.Dense(
-            (3 * self.num_bins - 1) * self.output_dim, name=f"output", activation='linear',
-            kernel_regularizer=self.regularizer
-        )(x)
-        x = tf.reshape(x, tf.concat((tf.shape(x)[:-1], (self.output_dim, -1)), axis=0))
-
-        # split and normalize widths, heights, slopes for spline
-        w, h, s = tf.split(x, (self.num_bins, self.num_bins, self.num_bins-1), -1)
-        w = layers.Lambda(self._normalize_bins)(w)
-        h = layers.Lambda(self._normalize_bins)(h)
-        s = layers.Lambda(self._normalize_slopes)(s)
-
-        out = w, h, s
-        self.network = Model(
-            inputs=inp, outputs=out, name='spline_params_network'
-        )
-
-    @tf.function
-    def __call__(self, x, input_dim):
-        return tfb.RationalQuadraticSpline(
-            *self.network(x), range_min=self.boundary[0]
-        )
-
-
-class ConditionalRQSNet(RQSNet):
-
-    def __init__(self, condition_dim, *args, **kwargs):
-        self.condition_dim = condition_dim
-        super().__init__(*args, **kwargs)
-
-    @property
-    def input_layers(self):
-        return [Input(self.input_dim, name="input"),
-                Input(self.condition_dim, name="conditional_input")]
-
-    @tf.function
-    def __call__(self, x, input_dim, cond):
-        return tfb.RationalQuadraticSpline(
-            *self.network([x, cond]), range_min=self.boundary[0]
-        )
-
-class ODENet(tf.Module):
-
-    def __init__(
-        self,
-        input_dim,
-        num_residual_blocks,
-        hidden_dim,
-        num_block_layers,
-        activation,
-        regularizer,
-        dropout,
-        *args,
-        **kwargs
-        ):
-
-        super(ODENet, self).__init__(*args, **kwargs)
-
-        self.input_dim = input_dim
-        self.num_residual_blocks = num_residual_blocks
-        self.hidden_dim = hidden_dim
-        self.num_block_layers = num_block_layers
-        self.input_dim = input_dim
-        self.activation = activation
-        self.regularizer = regularizer
-        self.dropout = dropout
-        self.network = ResNet(
-            num_blocks=self.num_residual_blocks,
-            hidden_dim=self.hidden_dim,
-            num_layers=self.num_block_layers,
-            output_dim=self.input_dim,
-            activation=self.activation,
-            regularizer=self.regularizer,
-            dropout=self.dropout
-        )
-
-    @tf.function
-    def __call__(self, t, x):
-        t = tf.expand_dims(tf.repeat(t, tf.shape(x)[0]), axis=1)
-        inp = tf.concat([t, x], axis=-1)
-        return self.network(inp)
-
-    def summary(self):
-        self.network.summary()
-
-
-class ConditionalODENet(ODENet):
-
-    def __init__(self, condition_dim, *args, **kwargs):
-        self.condition_dim = condition_dim
-        super().__init__(*args, **kwargs)
-
-    def __call__(self, t, x, cond):
-        t = tf.expand_dims(tf.repeat(t, tf.shape(x)[0]), axis=1)
-        inp = tf.concat([t, x, cond], axis=-1)
-        return self.network(inp)
 
 
 class NeuralODEFlow(Flow):
@@ -614,7 +520,7 @@ class TopicFlow(Model):
     def forward(self, x, y, kappa, sub_col):
         ll = self(x)
         mask = y[:, sub_col] == 1
-        loss = kappa * tf.reduce_mean(ll[mask]) - tf.reduce_mean(ll[~mask]) # Eq. 6
+        loss = kappa * tf.reduce_mean(ll[mask]) - tf.reduce_mean(ll[~mask])  # Eq. 6
         return loss
 
     @tf.function
