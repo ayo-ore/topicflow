@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 
+import numpy as np
+import os
+import pickle
+import topicflow as tpf
+
+from argparse import ArgumentParser
+from sklearn.metrics import roc_auc_score
+from tensorflow.config.threading import set_inter_op_parallelism_threads
+from tensorflow.keras import callbacks, optimizers, regularizers
+
 def train(args):
-
-    import sys
-    sys.path.append('/data/projects/punim0011/aore/weak')
-
-    import numpy as np
-    import pickle
-    from sklearn.metrics import roc_auc_score
-    from tensorflow.config.threading import set_inter_op_parallelism_threads
-    from tensorflow.keras import callbacks, optimizers, regularizers
 
     # set threads
     set_inter_op_parallelism_threads(4)
@@ -29,47 +30,40 @@ def train(args):
         efp_dir=args.efp_dir or tpf.data.EFP_DIR
     )
 
+    # configure flows
+    bijector_config = {'fraction_masked': 0.5} if args.arch == 'rqs' else {
+        'final_time': 1.0, 'atol': args.ode_atol, 'exact_trace': False
+    }  
+    net_config = {
+        'num_residual_blocks': args.num_residual_blocks,
+        'hidden_dim': args.hidden_dim,
+        'num_block_layers': args.num_block_layers,
+        'activation': 'tanh' if args.arch == 'node' else 'relu',
+        'regularizer': (
+            regularizers.l1(args.weight_decay) if args.weight_decay else None
+        ),
+        'dropout': args.dropout
+    }
+    if args.arch == 'rqs':
+        net_config.update({
+            'num_knots': args.rqs_num_knots,
+            'boundary': [-args.rqs_boundary, args.rqs_boundary],
+            'min_width': args.rqs_min_width,
+            'min_slope': args.rqs_min_slope
+        })
     model_config = {
         'dim': args.dimension,
-        'bijector_config': {
-            'final_time': 1.0,
-            'atol': args.ode_atol,
-            'exact_trace': False
-        },
-        'net_config': {
-            'num_residual_blocks': args.ode_num_residual_blocks,
-            'hidden_dim': args.ode_hidden_dim,
-            'num_block_layers': args.ode_num_block_layers,
-            'activation': 'tanh',
-            'regularizer': regularizers.l1(
-                args.ode_weight_decay
-            ) if args.ode_weight_decay else None,
-            'dropout': args.ode_dropout
-        }
-    } if args.arch == 'node' else {
-        'dim': args.dimension,
-        'num_transform_layers': args.num_transform_layers,
         'batchnorm': False,
-        'bijector_config': {'fraction_masked': 0.5},
-        'net_config': {
-            'layer_sizes': args.spline_layer_sizes,
-            'num_knots': args.spline_num_knots,
-            'boundary': [-args.spline_boundary, args.spline_boundary],
-            'min_width': args.spline_min_width,
-            'min_slope': args.spline_min_slope,
-            'regularizer': regularizers.l2(
-                args.spline_regularization
-            ) if args.spline_regularization else None,
-            'dropout': args.spline_dropout
-        }
-    } if args.arch == 'rqs' else None
+        'bijector_config': bijector_config,
+        'net_config': net_config
+    }
 
+    # build flows
     arch = tpf.NeuralODEFlow if args.arch == 'node' else tpf.RQSCouplingFlow
     flow1 = tpf.TopicFlow(args.dimension, (1-f1)/(1-f2), 0, arch, model_config)
     flow2 = tpf.TopicFlow(args.dimension,         f2/f1, 1, arch, model_config)
-    flow1.build([1, args.dimension])
-    flow2.build([1, args.dimension])
-   
+    flow1.build([None, args.dimension])
+    flow2.build([None, args.dimension])
     flow1.compile(optimizers.Adam(
         args.learning_rate, clipvalue=5 if args.arch == 'rqs' else None)
     )
@@ -112,7 +106,7 @@ def train(args):
         ]
     )
 
-    # save model
+    # save models
     weights_path1 = os.path.join(args.savedir, 'weights1')
     weights_path2 = os.path.join(args.savedir, 'weights2')
     model_config_path = os.path.join(args.savedir, 'model_config.p')
@@ -124,7 +118,7 @@ def train(args):
             print(f'Saving model config to {model_config_path}')
             pickle.dump(model_config, mf)
 
-    # test model
+    # test models
     test_data = [
         np.vstack(list(tpf.get_mixture_datasets(
             purities=[p], dim=args.dimension, batch_size=args.batch_size,
@@ -168,10 +162,6 @@ def train(args):
 
 if __name__ == '__main__':
 
-    import os
-    import topicflow as tpf
-    from argparse import ArgumentParser
-
     parser = ArgumentParser()
     parser.add_argument('-P', '--purities', type=float, nargs=2, required=True)
     parser.add_argument('-D', '--dimension', type=int, required=True)
@@ -189,22 +179,18 @@ if __name__ == '__main__':
     parser.add_argument('-V', '--val_frac', type=float, default=0.1)
     parser.add_argument('-E', '--tst_frac', type=float, default=0.15)
 
-    parser.add_argument('--arch', choices=('node', 'rqs'), default='node')
     parser.add_argument('-L', '--num_transform_layers', type=int, default=16)
-    parser.add_argument('--spline_layer_sizes', type=int, nargs='+', default=[128]*2)
-    parser.add_argument('--spline_num_knots', type=int, default=8)
-    parser.add_argument('--spline_boundary', type=int, default=6)
-    parser.add_argument('--spline_min_width', type=float, default=1e-4)
-    parser.add_argument('--spline_min_slope', type=float, default=1e-4)
-    parser.add_argument('--spline_regularization', type=float, default=0.)
-    parser.add_argument('--spline_dropout', type=float, default=None)
-
-    parser.add_argument('--ode_atol', type=float, default=1e-6)
-    parser.add_argument('--ode_num_residual_blocks', type=int, default=2)
-    parser.add_argument('--ode_hidden_dim', type=int, default=256)
-    parser.add_argument('--ode_num_block_layers', type=float, default=2)
-    parser.add_argument('--ode_weight_decay', type=float, default=0.)
-    parser.add_argument('--ode_dropout', type=float, default=None)
+    parser.add_argument('--weight_decay', type=float, default=0.)
+    parser.add_argument('--dropout', type=float, default=None)
+    parser.add_argument('--num_residual_blocks', type=int, default=2)
+    parser.add_argument('--hidden_dim', type=int, default=256)
+    parser.add_argument('--num_block_layers', type=float, default=2)
+    parser.add_argument('--arch', choices=('node', 'rqs'), default='node')
+    parser.add_argument('--node_atol', type=float, default=1e-6)
+    parser.add_argument('--rqs_num_knots', type=int, default=8)
+    parser.add_argument('--rqs_boundary', type=int, default=6)
+    parser.add_argument('--rqs_min_width', type=float, default=1e-4)
+    parser.add_argument('--rqs_min_slope', type=float, default=1e-4)
 
     parser.add_argument('-q', '--queue', default=None)
     parser.add_argument('-m', '--memory', default='48G')
