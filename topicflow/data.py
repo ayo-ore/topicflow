@@ -192,9 +192,6 @@ def get_mixture_datasets(
     mixture.
     """
 
-    # ensure provided purities are compatible with the labelling
-    assert len(purities) == 2 if labels else 1
-
     # load quark/gluon samples
     arrays = get_samples_from_disk(
         os.path.join(efp_dir, f'd{dim}'), fractions, purities, pca=pca
@@ -219,9 +216,9 @@ def get_mixture_datasets(
         rng.shuffle(idcs)
         X = Dataset.from_tensor_slices(X[idcs])
 
-        if not labels:
+        if len(purities) == 1:
             datasets[split] = X.apply(shuffle_and_batch)
-        else:
+        else: # assumes two mixtures
             y = np.zeros((len(idcs), 2), np.float32)
             y[:mixtures[0].shape[0], 1] = 1
             y[mixtures[0].shape[0]:, 0] = 1
