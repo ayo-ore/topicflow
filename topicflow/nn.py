@@ -176,7 +176,7 @@ class RQSNet(tf.Module):
         self.activation = activation
         self.regularizer = regularizer
         self.dropout = dropout
-        self.network = tpf.nn.ResNet(
+        self.network = ResNet(
             num_blocks=self.num_residual_blocks,
             hidden_dim=self.hidden_dim,
             num_layers=self.num_block_layers,
@@ -338,12 +338,12 @@ class Flow(Model):
         ]
 
         # create bijector chain
-        self.links = [self.transform_layers.pop(0)]
+        self.links = [self.transform_layers[0]]
         self.lus, self.ps = [], []
 
         # join multiple flow steps with invertible linear transformation and
         # batchnorm
-        for transform_layer in self.transform_layers:
+        for transform_layer in self.transform_layers[1:]:
             random_matrix = tf.random.uniform(
                 (self.dim, self.dim), dtype=tf.float32
             )

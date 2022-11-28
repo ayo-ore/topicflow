@@ -3,7 +3,7 @@
 import numpy as np
 import os
 import pickle
-import topicflow as tpf
+import topicflow as tofl
 
 from argparse import ArgumentParser
 from sklearn.metrics import roc_auc_score
@@ -22,12 +22,11 @@ def train(args):
     fractions = {
         'trn': args.trn_frac, 'val': args.val_frac, 'tst': args.tst_frac
     }
-
     f1, f2 = sorted(args.purities, reverse=True)
-    datasets = tpf.get_mixture_datasets(
-        purities=[f1,f2], fractions=fractions, dim=args.dimension,
-        pca=not args.nopca, batch_size=args.batch_size,
-        efp_dir=args.efp_dir or tpf.data.EFP_DIR
+    datasets = tofl.get_mixture_datasets(
+        purities=[f1,f2], fractions=fractions,pca=not args.nopca,
+        batch_size=args.batch_size, efp_degree=args.efp_degree,
+        efp_dir=args.efp_dir or tofl.data.EFP_DIR
     )
 
     # configure flows
@@ -51,19 +50,21 @@ def train(args):
             'min_width': args.rqs_min_width,
             'min_slope': args.rqs_min_slope
         })
+    dimension = datasets['trn'].element_spec[0].shape[1]
     model_config = {
-        'dim': args.dimension,
+        'dim': dimension,
+        'num_transform_layers': args.num_transform_layers,
         'batchnorm': False,
         'bijector_config': bijector_config,
         'net_config': net_config
     }
 
     # build flows
-    arch = tpf.NeuralODEFlow if args.arch == 'node' else tpf.RQSCouplingFlow
-    flow1 = tpf.TopicFlow(args.dimension, (1-f1)/(1-f2), 0, arch, model_config)
-    flow2 = tpf.TopicFlow(args.dimension,         f2/f1, 1, arch, model_config)
-    flow1.build([None, args.dimension])
-    flow2.build([None, args.dimension])
+    arch = tofl.NeuralODEFlow if args.arch == 'node' else tofl.RQSCouplingFlow
+    flow1 = tofl.TopicFlow(dimension, (1-f1)/(1-f2), 0, arch, model_config)
+    flow2 = tofl.TopicFlow(dimension,         f2/f1, 1, arch, model_config)
+    flow1.build([None, dimension])
+    flow2.build([None, dimension])
     flow1.compile(optimizers.Adam(
         args.learning_rate, clipvalue=5 if args.arch == 'rqs' else None)
     )
@@ -76,7 +77,7 @@ def train(args):
         monitor='val_loss', min_delta=1e-4, patience=args.patience, verbose=1,
         restore_best_weights=True,
     )
-    kappa_warmup = tpf.utils.ZeroWarmUp(
+    kappa_warmup = tofl.utils.ZeroWarmUp(
         param_name='kappa', warmup_epochs=args.warmup_epochs
     )
     reduce_on_plateau = callbacks.ReduceLROnPlateau(
@@ -105,7 +106,7 @@ def train(args):
             early_stopping, kappa_warmup, reduce_on_plateau, tensorboard2
         ]
     )
-
+    
     # save models
     weights_path1 = os.path.join(args.savedir, 'weights1')
     weights_path2 = os.path.join(args.savedir, 'weights2')
@@ -120,14 +121,13 @@ def train(args):
 
     # test models
     test_data = [
-        np.vstack(list(tpf.get_mixture_datasets(
-            purities=[p], dim=args.dimension, batch_size=args.batch_size,
-            labels=False, efp_dir = args.efp_dir or tpf.data.EFP_DIR,
-            fractions={
+        np.vstack(list(tofl.get_mixture_datasets(
+            purities=[p], batch_size=args.batch_size, pca=not args.nopca,
+            efp_degree=args.efp_degree, fractions={
                 'trn': fractions['trn'],
                 'val': 0.85-fractions['trn'],
                 'tst': 0.15
-            }
+            }, efp_dir = args.efp_dir or tofl.data.EFP_DIR,
         )['tst'])) for p in [1., 0.]
     ]
 
@@ -136,7 +136,7 @@ def train(args):
         flow1.flow.sample(150_000).numpy(), flow2.flow.sample(150_000).numpy()
     ]
     test_distances = [
-        tpf.utils.np_wasserstein(d.T, s.T)
+        tofl.utils.np_wasserstein(d.T, s.T)
         for d, s in zip(test_data, test_samples)
     ]
     distance_path = os.path.join(args.savedir, 'wassersteins.p')
@@ -164,9 +164,9 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('-P', '--purities', type=float, nargs=2, required=True)
-    parser.add_argument('-D', '--dimension', type=int, required=True)
     parser.add_argument('--nopca', action='store_true')
     parser.add_argument('-s', '--savedir', default=os.getcwd())
+    parser.add_argument('-D', '--efp_degree', type=int, default=4)
     parser.add_argument('--efp_dir', default=None)
     parser.add_argument('--dry', action='store_true')
 
@@ -179,8 +179,8 @@ if __name__ == '__main__':
     parser.add_argument('-V', '--val_frac', type=float, default=0.1)
     parser.add_argument('-E', '--tst_frac', type=float, default=0.15)
 
-    parser.add_argument('-L', '--num_transform_layers', type=int, default=16)
-    parser.add_argument('--weight_decay', type=float, default=0.)
+    parser.add_argument('-L', '--num_transform_layers', type=int, default=1)
+    parser.add_argument('--weight_decay', type=float, default=None)
     parser.add_argument('--dropout', type=float, default=None)
     parser.add_argument('--num_residual_blocks', type=int, default=2)
     parser.add_argument('--hidden_dim', type=int, default=256)
@@ -188,7 +188,7 @@ if __name__ == '__main__':
     parser.add_argument('--arch', choices=('node', 'rqs'), default='node')
     parser.add_argument('--node_atol', type=float, default=1e-6)
     parser.add_argument('--rqs_num_knots', type=int, default=8)
-    parser.add_argument('--rqs_boundary', type=int, default=6)
+    parser.add_argument('--rqs_boundary', type=float, default=6)
     parser.add_argument('--rqs_min_width', type=float, default=1e-4)
     parser.add_argument('--rqs_min_slope', type=float, default=1e-4)
 
@@ -199,12 +199,12 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
-    tpf.utils.check_fractions(args.trn_frac, args.val_frac, args.tst_frac)
-    tpf.utils.check_purities(args.purities)
+    tofl.utils.check_fractions(args.trn_frac, args.val_frac, args.tst_frac)
+    tofl.utils.check_purities(args.purities)
 
     if args.queue: # slurm cluster
-        tag = tpf.utils.create_tag(args.purities, args.train_frac)
+        tag = tofl.utils.create_tag(args.purities, args.train_frac)
         for run in range(args.runs):
-            tpf.utils.submit_train_job(args.arch +'_topic', tag, run, args)
+            tofl.utils.submit_train_job(args.arch +'_topic', tag, run, args)
     else:
         train(args)

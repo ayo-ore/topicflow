@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 
 import os
-import topicflow as tpf
 from argparse import ArgumentParser
+from topicflow.data import EFP_DIR
 
 def write(path, suffix, args):
     """
@@ -25,8 +25,12 @@ def write(path, suffix, args):
         quark_jets = jets[labels==1]
         gluon_jets = jets[labels==0]
         
-        quark_path = os.path.join(args.savedir, f'quark_efps{suffix}.npz')
-        gluon_path = os.path.join(args.savedir, f'gluon_efps{suffix}.npz')
+        quark_path = os.path.join(
+            args.savedir, f'd{args.max_degree}/quark_efps{suffix}.npz'
+        )
+        gluon_path = os.path.join(
+            args.savedir, f'd{args.max_degree}/gluon_efps{suffix}.npz'
+        )
         if args.overwrite or not os.path.exists(quark_path):
             print(f'Writing quark EFPs to {quark_path}')
             np.savez(
@@ -75,9 +79,9 @@ if __name__ == '__main__':
 
     parser = ArgumentParser()
     parser.add_argument('paths', nargs='+')
-    parser.add_argument('-s', '--savedir', default=tpf.data.EFP_DIR)
+    parser.add_argument('-s', '--savedir', default=EFP_DIR)
     parser.add_argument('-o', '--overwrite', action='store_true')
-    parser.add_argument('-d', '--max_degree', type=int, default=5)
+    parser.add_argument('-d', '--max_degree', type=int, default=4)
     parser.add_argument('-q', '--queue', default=None)
     parser.add_argument('-c', '--ncpus', type=int, default=8)
     parser.add_argument('--dry', action='store_true')

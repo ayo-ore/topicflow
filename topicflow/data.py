@@ -4,7 +4,7 @@ from glob import glob
 from scipy.optimize import linprog
 from tensorflow.data import Dataset, AUTOTUNE
 
-EFP_DIR = '~/.topic_flow/efps'
+EFP_DIR = os.path.join(os.path.expanduser('~'), '.topicflow/efps')
 
 def get_file_num(path):
     """Retrieves the file number of the given `.npz` file."""
@@ -176,25 +176,24 @@ def get_samples_from_disk(directory, fractions, purities, pca, only=None):
 
 
 def get_mixture_datasets(
-        dim,
         purities,
         fractions,
-        labels=True,
         pca=True,
         batch_size=500,
         shuffle_buffer=5e4,
+        efp_degree=4,
         efp_dir=EFP_DIR
         ):
     """
     Returns a dictionary mapping data splits to `tf.data.Dataset`s. Splits are
-    inherited from the keys of `fractions`. The dataset composition is
-    determined by the `purities` argument -- a list of quark purities for each
-    mixture.
+    inherited from the keys of `fractions`. The dataset composition and labels
+    are determined by the `purities` argument -- a list of quark purities for
+    each mixture.
     """
 
     # load quark/gluon samples
     arrays = get_samples_from_disk(
-        os.path.join(efp_dir, f'd{dim}'), fractions, purities, pca=pca
+        os.path.join(efp_dir, f'd{efp_degree}'), fractions, purities, pca=pca
     )
 
     # create function to shuffle and batch datasets
