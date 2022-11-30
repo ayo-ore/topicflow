@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
 
 import os
+import numpy as np
+import sys
+
 from argparse import ArgumentParser
-from topicflow.data import EFP_DIR
+from energyflow import EFPSet
+from glob import glob
+from subprocess import call
 
 def write(path, suffix, args):
     """
     Calculates the set of EFPs for each jet and stores as a numpy array per
     class.
     """
-
-    import numpy as np
-    from energyflow import EFPSet
 
     # create EFP set
     efp_set = EFPSet(
@@ -52,14 +54,11 @@ def submit(path, suffix, args):
     file with the same configuration.
     """
 
-    import sys
-    from subprocess import call
-
     setup_cmd = 'ml foss/2021b python/3.9.6'
-    drop_args = ['-q', '--queue', args.queue]
+    drop_args = ['-q', '--queue', args.queue, '--paths']
     script_cmd = 'python ' + ' '.join(
         [a for a in sys.argv if a not in drop_args + args.paths]
-        ) + f" {path}"
+        ) + f" --paths {path}"
 
     log_dir = os.path.join(args.savedir, 'log')
     os.makedirs(log_dir, exist_ok=True)
@@ -78,8 +77,12 @@ def submit(path, suffix, args):
 if __name__ == '__main__':
 
     parser = ArgumentParser()
-    parser.add_argument('paths', nargs='+')
-    parser.add_argument('-s', '--savedir', default=EFP_DIR)
+    parser.add_argument('--paths', nargs='+', default=
+        glob(os.path.expanduser('~/.energyflow/datasets/QG_jets*npz'))
+    )
+    parser.add_argument('-s', '--savedir', default=
+        os.path.expanduser('~/.topicflow/efps')
+    )
     parser.add_argument('-o', '--overwrite', action='store_true')
     parser.add_argument('-d', '--max_degree', type=int, default=4)
     parser.add_argument('-q', '--queue', default=None)
@@ -87,6 +90,9 @@ if __name__ == '__main__':
     parser.add_argument('--dry', action='store_true')
     args = parser.parse_args()
  
+    if len(args.paths) == 0:
+        print('No files found!')
+        
     op = submit if args.queue else write
     for path in args.paths:
         suffix = os.path.basename(path).replace(
