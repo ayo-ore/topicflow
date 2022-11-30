@@ -1,6 +1,6 @@
 # Normalizing flows for jet topic modelling
 
-Code for the paper: M. J. Dolan and A. Ore, _TopicFlow: Disentangling quark and gluon jets with normalizing flows_,
+Paper: M. J. Dolan and A. Ore, _TopicFlow: Disentangling quark and gluon jets with normalizing flows_,
 [arXiv:2211.XXXXX [hep-ph]](https://arxiv.org/abs/2211.XXXXX)
 
 ## Dependencies
@@ -16,7 +16,7 @@ The code has been tested with the following package versions:
 ## Usage
 
 ### Producing EFP datasets
-- First download the EnergyFlow Quark/Gluon dataset, either using the [`energyflow`]() package, or [Zenodo](https://zenodo.org/record/3164691).
+- First download the EnergyFlow Quark/Gluon dataset, either using [`energyflow.qg_jets.load`](https://energyflow.network/docs/datasets/#quark-and-gluon-jets), or from [Zenodo](https://zenodo.org/record/3164691).
 - The script `write-efps.py` can then be used to calculate EFP sets from the data:
 ```[bash]
 $ ./write-efps.py [--max_degree 4] [--paths /path/to/dataset/*.npz]
