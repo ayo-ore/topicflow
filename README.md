@@ -1,7 +1,7 @@
 # Normalizing flows for jet topic modelling
 
 Paper: M. J. Dolan and A. Ore, _TopicFlow: Disentangling quark and gluon jets with normalizing flows_,
-[arXiv:2211.XXXXX [hep-ph]](https://arxiv.org/abs/2211.XXXXX)
+[arXiv:2211.16053 [hep-ph]](https://arxiv.org/abs/2211.16053)
 
 ## Dependencies
 The code has been tested with the following package versions:
