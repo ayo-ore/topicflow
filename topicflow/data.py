@@ -23,14 +23,24 @@ def get_file_splits(directory, fractions):
     # find and count all nprecords
     nprecords = glob(os.path.join(directory, '*.npz'))
     num_files = len(nprecords)
+
+    # consistency checks
     assert num_files > 0, f"Could not find any numpy records in {directory}"
-    assert all([
-        n == int(n)
-        for n in map(lambda f: f * num_files / 2, fractions.values())
-    ]), (
-        f"Not possible to split as requested with {num_files} files, minimum "
+    assert all([f >= 2/num_files for f in fractions.values()]), (
+        f"Not possible to split as requested with {num_files} files. Minimum "
         f"unit is {2/num_files:n}. Consider sharding data for smaller splits."
     )
+    deltas = [
+        (n - int(n))
+        for n in map(lambda f: f * num_files / 2, fractions.values())
+    ]
+    for (s,f), d in zip(fractions.items(), deltas):
+        if d > 1e-4:
+            print(
+                f"WARNING: split {s}: {f} may not be possible. Minimum "
+                f"unit is {2/num_files:n}. Consider sharding data for "
+                f"smaller splits."
+            )
 
     # get number of files in each split
     edges, consumed = {}, 0
