@@ -84,7 +84,7 @@ if __name__ == '__main__':
         os.path.expanduser('~/.topicflow/efps')
     )
     parser.add_argument('-o', '--overwrite', action='store_true')
-    parser.add_argument('-d', '--max_degree', type=int, default=4)
+    parser.add_argument('-d', '--max_degree', type=int, default=3)
     parser.add_argument('-q', '--queue', default=None)
     parser.add_argument('-c', '--ncpus', type=int, default=8)
     parser.add_argument('--dry', action='store_true')
