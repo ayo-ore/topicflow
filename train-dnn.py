@@ -78,20 +78,16 @@ def train(args):
         preds = dnn.predict_on_batch(x)
         qpreds = np.append(qpreds, preds[y[:, 1] == 1, 1])
         gpreds = np.append(gpreds, preds[y[:, 1] == 0, 1])
-    demix_dict = tofl.utils.demix_topics(qpreds, gpreds, 64, 6)
 
     # save model and test metrics
     weights_path = os.path.join(args.savedir, 'weights')
     metrics_path = os.path.join(args.savedir, 'metrics.p')
-    demix_path = os.path.join(args.savedir, 'demix_dict.p')
     print(f'Saving weights to {weights_path}')
     print(f'Saving metrics to {metrics_path}')
-    print(f'Saving topic fractions and reducibilities to {demix_path}')
     if not args.dry:
         dnn.save_weights(weights_path)
-        with open(metrics_path, 'wb') as fm, open(demix_path, 'wb') as fd:
-            pickle.dump(metrics, fm)
-            pickle.dump(demix_dict, fd)
+        with open(metrics_path, 'wb') as f:
+            pickle.dump(metrics, f)
 
 
 if __name__ == '__main__':
