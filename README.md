@@ -19,8 +19,9 @@ The code has been tested with the following package versions:
 - First download the EnergyFlow Quark/Gluon dataset, either using [`energyflow.qg_jets.load`](https://energyflow.network/docs/datasets/#quark-and-gluon-jets), or from [Zenodo](https://zenodo.org/record/3164691).
 - The script `write-efps.py` can then be used to calculate EFP sets from the data:
 ```[bash]
-$ ./write-efps.py [--max_degree 4] [--paths /path/to/dataset/*.npz]
+$ ./write-efps.py [--max_degree 3] [--paths /path/to/dataset/*.npz]
 ```
+- It may take a long time to convert the entire dataset, so it is recommended to parallelize across files if possible.
 
 ### Training a flow model
 - The script `train-flow.py` trains quark and gluon jet topic flows on mixed datasets with given quark fractions:
