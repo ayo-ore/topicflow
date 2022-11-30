@@ -41,7 +41,7 @@ def train(args):
         'dropout': None if not args.dropout else float(args.dropout),
     }
     dnn = tofl.make_dnn(**dnn_config)
-    dnn.build([None, datasets['trn'].element_spec.shape[1]])
+    dnn.build([None, datasets['trn'].element_spec[0].shape[1]])
     dnn.summary()
     dnn.compile(
         optimizer=Adam(args.learning_rate), loss='bce', metrics=['AUC', 'acc']
@@ -97,7 +97,7 @@ if __name__ == '__main__':
     parser.add_argument('--nopca', action='store_true')
     parser.add_argument('-s', '--savedir', default=os.getcwd())
     parser.add_argument('-D', '--efp_degree', type=int, default=4)
-    parser.add_arguemtn('--efp_dir', default=None)
+    parser.add_argument('--efp_dir', default=None)
     parser.add_argument('--dry', action='store_true')
 
     parser.add_argument('-b', '--batch_size', type=int, default=500)
@@ -106,9 +106,9 @@ if __name__ == '__main__':
     parser.add_argument('-l', '--learning_rate', type=float, default=1e-4)
     parser.add_argument('-r', '--regularization', default=None)
     parser.add_argument('-d', '--dropout', default=0.15)
-    parser.add_argument('-T', '--trn_frac', type=float, default=0.75)
+    parser.add_argument('-T', '--trn_frac', type=float, default=0.5)
     parser.add_argument('-V', '--val_frac', type=float, default=0.1)
-    parser.add_argument('-E', '--tst_frac', type=float, default=0.15)
+    parser.add_argument('-E', '--tst_frac', type=float, default=0.4)
 
     parser.add_argument('-q', '--queue', default=None)
     parser.add_argument('-n', '--runs', type=int, default=1)
@@ -120,7 +120,7 @@ if __name__ == '__main__':
     tofl.utils.check_purities(args.purities)
 
     args.purities = sorted(args.purities)
-    tag = tofl.utils.create_tag(args.purities, args.train_frac)
+    tag = tofl.utils.create_tag(args.purities, args.trn_frac)
     if args.queue:
         for run in range(args.runs):
             tofl.utils.submit_train_job('dnn', tag, run, args)

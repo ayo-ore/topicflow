@@ -32,7 +32,7 @@ def train(args):
 
     # configure flows
     bijector_config = {'fraction_masked': 0.5} if args.arch == 'rqs' else {
-        'final_time': 1.0, 'atol': args.ode_atol, 'exact_trace': False
+        'final_time': 1.0, 'atol': args.node_atol, 'exact_trace': False
     }
     net_config = {
         'num_residual_blocks': args.num_residual_blocks,
@@ -176,9 +176,9 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--patience', type=int, default=10)
     parser.add_argument('-l', '--learning_rate', type=float, default=1e-4)
     parser.add_argument('-w', '--warmup_epochs', type=int, default=0)
-    parser.add_argument('-T', '--trn_frac', type=float, default=0.75)
+    parser.add_argument('-T', '--trn_frac', type=float, default=0.5)
     parser.add_argument('-V', '--val_frac', type=float, default=0.1)
-    parser.add_argument('-E', '--tst_frac', type=float, default=0.15)
+    parser.add_argument('-E', '--tst_frac', type=float, default=0.4)
 
     parser.add_argument('-L', '--num_transform_layers', type=int, default=1)
     parser.add_argument('--weight_decay', type=float, default=None)
@@ -204,7 +204,7 @@ if __name__ == '__main__':
     tofl.utils.check_purities(args.purities)
 
     if args.queue:  # slurm cluster
-        tag = tofl.utils.create_tag(args.purities, args.train_frac)
+        tag = tofl.utils.create_tag(args.purities, args.trn_frac)
         for run in range(args.runs):
             tofl.utils.submit_train_job(args.arch + '_topic', tag, run, args)
     else:
