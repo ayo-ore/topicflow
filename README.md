@@ -30,7 +30,7 @@ $ ./train-flow.py --purities 0.3 0.7 --savedir outputs
 ```
 - The default settings run the FFJORD model. The spline architecture used for generative classification in the paper can be run with:
 ```[bash]
-$ ./train-flow.py --purities 0.3 0.7 --arch rqs --num_transform_layers 16 --num_residual_blocks 1 --hidden_dim 128 --learning_rate 1e-4 --warmup_epochs 5 --dropout -0.2
+$ ./train-flow.py --purities 0.3 0.7 --arch rqs --num_transform_layers 16 --num_residual_blocks 1 --hidden_dim 128 --learning_rate 1e-4 --warmup_epochs 5 --dropout 0.2
 ```
 - The script produces the following outputs:
   - `model_config.p`: Pickled dictionary containing the flow config.
