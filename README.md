@@ -41,7 +41,7 @@ $ ./train-flow.py --purities 0.3 0.7 --arch rqs --num_transform_layers 16 --num_
 
 
 
-### Train a classifier
+### Training a classifier
 
 - A simple fully-connected classifier can be trained on mixed datasets using `train-dnn.py`:
 ```[bash]
