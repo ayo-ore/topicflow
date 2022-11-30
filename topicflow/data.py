@@ -4,7 +4,7 @@ from glob import glob
 from scipy.optimize import linprog
 from tensorflow.data import Dataset, AUTOTUNE
 
-EFP_DIR = os.path.join(os.path.expanduser('~'), '.topicflow/efps')
+EFP_DIR = os.path.expanduser('~/.topicflow/efps')
 
 def get_file_num(path):
     """Retrieves the file number of the given `.npz` file."""
