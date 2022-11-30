@@ -10,6 +10,7 @@ from sklearn.metrics import roc_auc_score
 from tensorflow.config.threading import set_inter_op_parallelism_threads
 from tensorflow.keras import callbacks, optimizers, regularizers
 
+
 def train(args):
 
     # set threads
@@ -24,7 +25,7 @@ def train(args):
     }
     f1, f2 = sorted(args.purities, reverse=True)
     datasets = tofl.get_mixture_datasets(
-        purities=[f1,f2], fractions=fractions,pca=not args.nopca,
+        purities=[f1, f2], fractions=fractions, pca=not args.nopca,
         batch_size=args.batch_size, efp_degree=args.efp_degree,
         efp_dir=args.efp_dir or tofl.data.EFP_DIR
     )
@@ -32,7 +33,7 @@ def train(args):
     # configure flows
     bijector_config = {'fraction_masked': 0.5} if args.arch == 'rqs' else {
         'final_time': 1.0, 'atol': args.ode_atol, 'exact_trace': False
-    }  
+    }
     net_config = {
         'num_residual_blocks': args.num_residual_blocks,
         'hidden_dim': args.hidden_dim,
@@ -61,14 +62,14 @@ def train(args):
 
     # build flows
     arch = tofl.NeuralODEFlow if args.arch == 'node' else tofl.RQSCouplingFlow
-    flow1 = tofl.TopicFlow(dimension, (1-f1)/(1-f2), 0, arch, model_config)
-    flow2 = tofl.TopicFlow(dimension,         f2/f1, 1, arch, model_config)
-    flow1.build([None, dimension])
-    flow2.build([None, dimension])
-    flow1.compile(optimizers.Adam(
+    qflow = tofl.TopicFlow(dimension, (1-f1)/(1-f2), 0, arch, model_config)
+    gflow = tofl.TopicFlow(dimension,         f2/f1, 1, arch, model_config)
+    qflow.build([None, dimension])
+    gflow.build([None, dimension])
+    qflow.compile(optimizers.Adam(
         args.learning_rate, clipvalue=5 if args.arch == 'rqs' else None)
     )
-    flow2.compile(optimizers.Adam(
+    gflow.compile(optimizers.Adam(
         args.learning_rate, clipvalue=5 if args.arch == 'rqs' else None)
     )
 
@@ -84,37 +85,37 @@ def train(args):
         monitor='val_loss', factor=0.1, patience=5,
         verbose=1, min_lr=1e-6
     )
-    tensorboard1 = callbacks.TensorBoard(
-        log_dir=os.path.join(args.savedir, 'summary/topic1'), write_graph=False,
+    qtensorboard = callbacks.TensorBoard(
+        log_dir=os.path.join(args.savedir, 'summary/qtopic'), write_graph=False,
         update_freq='epoch', profile_batch=0
     )
-    tensorboard2 = callbacks.TensorBoard(
-        log_dir=os.path.join(args.savedir, 'summary/topic2'), write_graph=False,
+    gtensorboard = callbacks.TensorBoard(
+        log_dir=os.path.join(args.savedir, 'summary/gtopic'), write_graph=False,
         update_freq='epoch', profile_batch=0
     )
-    
+
     # training
-    flow1.fit(
+    qflow.fit(
         datasets['trn'], validation_data=datasets['val'].unbatch().batch(5000),
         epochs=args.epochs, verbose=2, callbacks=[
-            early_stopping, kappa_warmup, reduce_on_plateau, tensorboard1
+            early_stopping, kappa_warmup, reduce_on_plateau, qtensorboard
         ]
     )
-    flow2.fit(
+    gflow.fit(
         datasets['trn'], validation_data=datasets['val'].unbatch().batch(5000),
         epochs=args.epochs, verbose=2, callbacks=[
-            early_stopping, kappa_warmup, reduce_on_plateau, tensorboard2
+            early_stopping, kappa_warmup, reduce_on_plateau, gtensorboard
         ]
     )
-    
+
     # save models
-    weights_path1 = os.path.join(args.savedir, 'weights1')
-    weights_path2 = os.path.join(args.savedir, 'weights2')
+    qweights_path = os.path.join(args.savedir, 'qweights')
+    gweights_path = os.path.join(args.savedir, 'gweights')
     model_config_path = os.path.join(args.savedir, 'model_config.p')
     if not args.dry:
-        print(f'Saving weights to {weights_path1}, {weights_path2}')
-        flow1.flow.save_weights(weights_path1)
-        flow2.flow.save_weights(weights_path2)
+        print(f'Saving weights to {qweights_path}, {gweights_path}')
+        qflow.flow.save_weights(qweights_path)
+        gflow.flow.save_weights(gweights_path)
         with open(model_config_path, 'wb') as mf:
             print(f'Saving model config to {model_config_path}')
             pickle.dump(model_config, mf)
@@ -127,13 +128,13 @@ def train(args):
                 'trn': fractions['trn'],
                 'val': 0.85-fractions['trn'],
                 'tst': 0.15
-            }, efp_dir = args.efp_dir or tofl.data.EFP_DIR,
+            }, efp_dir=args.efp_dir or tofl.data.EFP_DIR,
         )['tst'])) for p in [1., 0.]
     ]
 
     # wassersteins
     test_samples = [
-        flow1.flow.sample(150_000).numpy(), flow2.flow.sample(150_000).numpy()
+        qflow.flow.sample(150_000).numpy(), gflow.flow.sample(150_000).numpy()
     ]
     test_distances = [
         tofl.utils.np_wasserstein(d.T, s.T)
@@ -146,7 +147,7 @@ def train(args):
             pickle.dump(test_distances, f)
 
     # generative classification metrics
-    preds = np.hstack([flow1(d) - flow2(d) for d in test_data])
+    preds = np.hstack([qflow(d) - gflow(d) for d in test_data])
     labels = np.zeros(len(preds))
     labels[:len(test_data[0])] = 1
     metrics = {
@@ -193,7 +194,7 @@ if __name__ == '__main__':
     parser.add_argument('--rqs_min_slope', type=float, default=1e-4)
 
     parser.add_argument('-q', '--queue', default=None)
-    parser.add_argument('-m', '--memory', default='48G')
+    parser.add_argument('-m', '--memory', default='20G')
     parser.add_argument('-t', '--time', default='48:00:00')
     parser.add_argument('-n', '--runs', type=int, default=1)
 
@@ -202,9 +203,9 @@ if __name__ == '__main__':
     tofl.utils.check_fractions(args.trn_frac, args.val_frac, args.tst_frac)
     tofl.utils.check_purities(args.purities)
 
-    if args.queue: # slurm cluster
+    if args.queue:  # slurm cluster
         tag = tofl.utils.create_tag(args.purities, args.train_frac)
         for run in range(args.runs):
-            tofl.utils.submit_train_job(args.arch +'_topic', tag, run, args)
+            tofl.utils.submit_train_job(args.arch + '_topic', tag, run, args)
     else:
         train(args)
